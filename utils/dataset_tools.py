@@ -13,14 +13,19 @@ def maybe_unzip_dataset(args):
         print(dataset_path)
         if not os.path.exists(dataset_path):
             print("Not found dataset folder structure.. searching for .tar.bz2 file")
-            zip_directory = "{}.tar.bz2".format(os.path.join(os.environ['DATASET_DIR'], datasets[dataset_idx]))
+            #zip_directory = "{}.tar.bz2".format(os.path.join(os.environ['DATASET_DIR'], datasets[dataset_idx]))
+            datasetDir = '/datasets/mini-imagenet'
+            zip_directory = "{}.tar.bz2".format(os.path.join(datasetDir, datasets[dataset_idx]))
 
             assert os.path.exists(os.path.abspath(zip_directory)), "{} dataset zip file not found" \
                                                   "place dataset in datasets folder as explained in README".format(os.path.abspath(zip_directory))
             print("Found zip file, unpacking")
 
-            unzip_file(filepath_pack=os.path.join(os.environ['DATASET_DIR'], "{}.tar.bz2".format(datasets[dataset_idx])),
-                       filepath_to_store=os.environ['DATASET_DIR'])
+            #unzip_file(filepath_pack=os.path.join(os.environ['DATASET_DIR'], "{}.tar.bz2".format(datasets[dataset_idx])),
+            #           filepath_to_store=os.environ['DATASET_DIR'])
+
+            unzip_file(filepath_pack=os.path.join(datasetDir, "{}.tar.bz2".format(datasets[dataset_idx])),
+                       filepath_to_store=datasetDir)
 
 
 
