@@ -20,6 +20,7 @@ class ExperimentBuilder(object):
         self.args, self.device = args, device
 
         self.model = model
+        self.modelType = self.args.model
         self.saved_models_filepath, self.logs_filepath, self.samples_filepath = build_experiment_folder(
             experiment_name=self.args.experiment_name)
 
