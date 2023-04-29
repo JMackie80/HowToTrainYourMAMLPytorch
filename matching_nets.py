@@ -1,14 +1,14 @@
 import os
+import math
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.autograd import Variable
 
 from meta_neural_network_architectures import VGGReLUNormNetwork
-from inner_loop_optimizers import LSLRGradientDescentLearningRule
-
 
 def set_torch_seed(seed):
     """
@@ -22,11 +22,10 @@ def set_torch_seed(seed):
 
     return rng
 
-
 class MatchingNetsFewShotClassifier(nn.Module):
     def __init__(self, im_shape, device, args):
         """
-        Initializes a MAML few shot learning system
+        Initializes a Matching Nets few shot learning system
         :param im_shape: The images input size, in batch, c, h, w shape
         :param device: The device to use to use the model on.
         :param args: A namedtuple of arguments specifying various hyperparameters.
@@ -38,23 +37,17 @@ class MatchingNetsFewShotClassifier(nn.Module):
         self.use_cuda = args.use_cuda
         self.im_shape = im_shape
         self.current_epoch = 0
+        self.num_classes_per_set = args.num_classes_per_set
+
+        #self.g = Classifier(layer_size=64, num_channels=args.image_channels, keep_prob=0.0, image_size=args.image_height)
+        
+        self.dn = DistanceNetwork()
+        self.classify = AttentionalClassify()
 
         self.rng = set_torch_seed(seed=args.seed)
         self.classifier = VGGReLUNormNetwork(im_shape=self.im_shape, num_output_classes=self.args.
                                              num_classes_per_set,
                                              args=args, device=device, meta_classifier=True).to(device=self.device)
-        self.task_learning_rate = args.task_learning_rate
-
-        self.inner_loop_optimizer = LSLRGradientDescentLearningRule(device=device,
-                                                                    init_learning_rate=self.task_learning_rate,
-                                                                    total_num_inner_loop_steps=self.args.number_of_training_steps_per_iter,
-                                                                    use_learnable_learning_rates=self.args.learnable_per_layer_per_step_inner_loop_learning_rate)
-        self.inner_loop_optimizer.initialise(
-            names_weights_dict=self.get_inner_loop_parameter_dict(params=self.classifier.named_parameters()))
-
-        print("Inner Loop parameters")
-        for key, value in self.inner_loop_optimizer.named_parameters():
-            print(key, value.shape)
 
         self.use_cuda = args.use_cuda
         self.device = device
@@ -64,7 +57,6 @@ class MatchingNetsFewShotClassifier(nn.Module):
         for name, param in self.named_parameters():
             if param.requires_grad:
                 print(name, param.shape, param.device, param.requires_grad)
-
 
         self.optimizer = optim.Adam(self.trainable_parameters(), lr=args.meta_learning_rate, amsgrad=False)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=self.optimizer, T_max=self.args.total_epochs,
@@ -80,93 +72,6 @@ class MatchingNetsFewShotClassifier(nn.Module):
 
             self.device = torch.cuda.current_device()
 
-    def get_per_step_loss_importance_vector(self):
-        """
-        Generates a tensor of dimensionality (num_inner_loop_steps) indicating the importance of each step's target
-        loss towards the optimization loss.
-        :return: A tensor to be used to compute the weighted average of the loss, useful for
-        the MSL (Multi Step Loss) mechanism.
-        """
-        loss_weights = np.ones(shape=(self.args.number_of_training_steps_per_iter)) * (
-                1.0 / self.args.number_of_training_steps_per_iter)
-        decay_rate = 1.0 / self.args.number_of_training_steps_per_iter / self.args.multi_step_loss_num_epochs
-        min_value_for_non_final_losses = 0.03 / self.args.number_of_training_steps_per_iter
-        for i in range(len(loss_weights) - 1):
-            curr_value = np.maximum(loss_weights[i] - (self.current_epoch * decay_rate), min_value_for_non_final_losses)
-            loss_weights[i] = curr_value
-
-        curr_value = np.minimum(
-            loss_weights[-1] + (self.current_epoch * (self.args.number_of_training_steps_per_iter - 1) * decay_rate),
-            1.0 - ((self.args.number_of_training_steps_per_iter - 1) * min_value_for_non_final_losses))
-        loss_weights[-1] = curr_value
-        loss_weights = torch.Tensor(loss_weights).to(device=self.device)
-        return loss_weights
-
-    def get_inner_loop_parameter_dict(self, params):
-        """
-        Returns a dictionary with the parameters to use for inner loop updates.
-        :param params: A dictionary of the network's parameters.
-        :return: A dictionary of the parameters to use for the inner loop optimization process.
-        """
-        return {
-            name: param.to(device=self.device)
-            for name, param in params
-            if param.requires_grad
-            and (
-                not self.args.enable_inner_loop_optimizable_bn_params
-                and "norm_layer" not in name
-                or self.args.enable_inner_loop_optimizable_bn_params
-            )
-        }
-
-    def apply_inner_loop_update(self, loss, names_weights_copy, use_second_order, current_step_idx):
-        """
-        Applies an inner loop update given current step's loss, the weights to update, a flag indicating whether to use
-        second order derivatives and the current step's index.
-        :param loss: Current step's loss with respect to the support set.
-        :param names_weights_copy: A dictionary with names to parameters to update.
-        :param use_second_order: A boolean flag of whether to use second order derivatives.
-        :param current_step_idx: Current step's index.
-        :return: A dictionary with the updated weights (name, param)
-        """
-        num_gpus = torch.cuda.device_count()
-        if num_gpus > 1:
-            self.classifier.module.zero_grad(params=names_weights_copy)
-        else:
-            self.classifier.zero_grad(params=names_weights_copy)
-
-        grads = torch.autograd.grad(loss, names_weights_copy.values(),
-                                    create_graph=use_second_order, allow_unused=True)
-        names_grads_copy = dict(zip(names_weights_copy.keys(), grads))
-
-        names_weights_copy = {key: value[0] for key, value in names_weights_copy.items()}
-
-        for key, grad in names_grads_copy.items():
-            if grad is None:
-                print('Grads not found for inner loop parameter', key)
-            names_grads_copy[key] = names_grads_copy[key].sum(dim=0)
-
-
-        names_weights_copy = self.inner_loop_optimizer.update_params(names_weights_dict=names_weights_copy,
-                                                                     names_grads_wrt_params_dict=names_grads_copy,
-                                                                     num_step=current_step_idx)
-
-        num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
-        names_weights_copy = {
-            name.replace('module.', ''): value.unsqueeze(0).repeat(
-                [num_devices] + [1 for i in range(len(value.shape))]) for
-            name, value in names_weights_copy.items()}
-
-
-        return names_weights_copy
-
-    def get_across_task_loss_metrics(self, total_losses, total_accuracies):
-        losses = {'loss': torch.mean(torch.stack(total_losses))}
-
-        losses['accuracy'] = np.mean(total_accuracies)
-
-        return losses
-
     def forward(self, data_batch, num_steps, training_phase):
         """
         Runs a forward outer loop pass on the batch of tasks using the MAML/++ framework.
@@ -181,7 +86,6 @@ class MatchingNetsFewShotClassifier(nn.Module):
 
         self.num_classes_per_set = ncs
 
-        total_losses = []
         total_accuracies = []
         per_task_target_preds = [[] for i in range(len(x_target_set))]
         self.classifier.zero_grad()
@@ -189,15 +93,7 @@ class MatchingNetsFewShotClassifier(nn.Module):
                               y_support_set,
                               x_target_set,
                               y_target_set)):
-            task_losses = []
-            #names_weights_copy = self.get_inner_loop_parameter_dict(self.classifier.named_parameters())
-
-            num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
-
-            #names_weights_copy = {
-            #    name.replace('module.', ''): value.unsqueeze(0).repeat(
-            #        [num_devices] + [1 for i in range(len(value.shape))]) for
-            #    name, value in names_weights_copy.items()}
+            losses = []
 
             n, s, c, h, w = x_target_set_task.shape
 
@@ -205,43 +101,42 @@ class MatchingNetsFewShotClassifier(nn.Module):
             y_support_set_task = y_support_set_task.view(-1)
             x_target_set_task = x_target_set_task.view(-1, c, h, w)
             y_target_set_task = y_target_set_task.view(-1)
+            x_support_images = []
+
+            # convert to one hot encoding
+            print(y_support_set_task)
+            #y_support_set_task = y_support_set_task.numpy()
+            #y_support_set_task = Variable(torch.from_numpy(y_support_set_task), requires_grad=False).long()
+            #y_support_set_task = y_support_set_task.unsqueeze(1)
+            #sequence_length = y_support_set_task.size()[1]
+            #batch_size = y_support_set_task.size()[0]
+            #print(y_support_set_task, batch_size, sequence_length, self.num_classes_per_set)
+            #y_support_zeros = torch.zeros(1, sequence_length, self.num_classes_per_set)
+            #print(y_support_zeros)
+            #y_support_scatter = y_support_zeros.scatter_(2, y_support_set_task, 1)
+            #print(y_support_scatter)
+            #y_support_set_one_hot = Variable(y_support_zeros, requires_grad=False)
+            y_support_set_one_hot = F.one_hot(y_target_set_task)
 
             for num_step in range(num_steps):
-
-                support_loss, support_preds = self.net_forward(
-                    x=x_support_set_task,
-                    y=y_support_set_task,
-                    backup_running_statistics=num_step == 0,
-                    training=True,
-                    num_step=num_step,
-                )
-                task_losses.append(support_loss)
-
-                #names_weights_copy = self.apply_inner_loop_update(loss=support_loss,
-                #                                    names_weights_copy=names_weights_copy,
-                #                                    use_second_order=use_second_order,
-                #                                    current_step_idx=num_step)
-
                 if num_step == (self.args.number_of_training_steps_per_iter - 1):
-                    target_loss, target_preds = self.net_forward(x=x_target_set_task,
-                                                                 y=y_target_set_task,
-                                                                 backup_running_statistics=False, training=True,
-                                                                 num_step=num_step)
-                    task_losses.append(target_loss)
-
-            per_task_target_preds[task_id] = target_preds.detach().cpu().numpy()
-            _, predicted = torch.max(target_preds.data, 1)
-
-            accuracy = predicted.float().eq(y_target_set_task.data.float()).cpu().float()
-            task_losses = torch.sum(torch.stack(task_losses))
-            total_losses.append(task_losses)
-            total_accuracies.extend(accuracy)
+                    # get similarities between support set embeddings and target
+                    similarites = self.dn(support_set=x_support_images, input_image=x_target_set_task)
+                    # produce predictions for target probabilities
+                    target_preds = self.classify(similarites, support_set_y=y_support_set_one_hot)
+                    values, indices = target_preds.max(1)
+                    accuracy = torch.mean((indices.squeeze() == y_target_set_task).float())
+                    total_accuracies.extend(accuracy)
+                    crossentropy_loss = F.cross_entropy(target_preds, y_target_set_task)
+                    self.meta_update(loss=crossentropy_loss)
+                    self.optimizer.zero_grad()
+                    self.zero_grad()
+                    losses.append(crossentropy_loss)
+                else:
+                    x_support_images.append(x_support_set_task)
 
             if not training_phase:
                 self.classifier.restore_backup_stats()
-
-        losses = self.get_across_task_loss_metrics(total_losses=total_losses,
-                                                   total_accuracies=total_accuracies)
 
         return losses, per_task_target_preds
 
@@ -263,6 +158,10 @@ class MatchingNetsFewShotClassifier(nn.Module):
         preds = self.classifier.forward(x=x, training=training, backup_running_statistics=backup_running_statistics, num_step=num_step)
 
         loss = F.cross_entropy(input=preds, target=y)
+
+        self.meta_update(loss=loss)
+        self.optimizer.zero_grad()
+        self.zero_grad()
 
         return loss, preds
 
@@ -337,11 +236,7 @@ class MatchingNetsFewShotClassifier(nn.Module):
         data_batch = (x_support_set, x_target_set, y_support_set, y_target_set)
 
         losses, per_task_target_preds = self.train_forward_prop(data_batch=data_batch, epoch=epoch)
-
-        self.meta_update(loss=losses['loss'])
         losses['learning_rate'] = self.scheduler.get_lr()[0]
-        self.optimizer.zero_grad()
-        self.zero_grad()
 
         return losses, per_task_target_preds
 
@@ -399,3 +294,93 @@ class MatchingNetsFewShotClassifier(nn.Module):
         self.optimizer.load_state_dict(state['optimizer'])
         self.load_state_dict(state_dict=state_dict_loaded)
         return state
+
+def convLayer(in_channels, out_channels, keep_prob=0.0):
+    """3*3 convolution with padding,ever time call it the output size become half"""
+    cnn_seq = nn.Sequential(
+        nn.Conv2d(in_channels, out_channels, 3, 1, 1),
+        nn.ReLU(True),
+        nn.BatchNorm2d(out_channels),
+        nn.MaxPool2d(kernel_size=2, stride=2),
+        nn.Dropout(keep_prob)
+    )
+    return cnn_seq
+
+class Classifier(nn.Module):
+    def __init__(self, layer_size=64, num_channels=1, keep_prob=1.0, image_size=28):
+        super(Classifier, self).__init__()
+        """
+        Build a CNN to produce embeddings
+        :param layer_size:64(default)
+        :param num_channels:
+        :param keep_prob:
+        :param image_size:
+        """
+        self.layer1 = convLayer(num_channels, layer_size, keep_prob)
+        self.layer2 = convLayer(layer_size, layer_size, keep_prob)
+        self.layer3 = convLayer(layer_size, layer_size, keep_prob)
+        self.layer4 = convLayer(layer_size, layer_size, keep_prob)
+
+        finalSize = int(math.floor(image_size / (2 * 2 * 2 * 2)))
+        self.outSize = finalSize * finalSize * layer_size
+
+    def forward(self, image_input):
+        """
+        Use CNN defined above
+        :param image_input:
+        :return:
+        """
+        x = self.layer1(image_input)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = x.view(x.size()[0], -1)
+        return x
+
+class AttentionalClassify(nn.Module):
+    def __init__(self):
+        super(AttentionalClassify, self).__init__()
+
+    def forward(self, similarities, support_set_y):
+        """
+        Products pdfs over the support set classes for the target set image.
+        :param similarities: A tensor with cosine similarites of size[batch_size,sequence_length]
+        :param support_set_y:[batch_size,sequence_length,classes_num]
+        :return: Softmax pdf shape[batch_size,classes_num]
+        """
+        softmax = nn.Softmax()
+        softmax_similarities = softmax(similarities)
+        print('similarities', similarities)
+        print('softmax_similarities', softmax_similarities)
+        print('support_set_y', support_set_y)
+        #preds = softmax_similarities.unsqueeze(1).bmm(support_set_y).squeeze()
+        preds = softmax_similarities.bmm(support_set_y)
+        return preds
+
+class DistanceNetwork(nn.Module):
+    """
+    This model calculates the cosine distance between each of the support set embeddings and the target image embeddings.
+    """
+
+    def __init__(self):
+        super(DistanceNetwork, self).__init__()
+
+    def forward(self, support_set, input_image):
+        """
+        forward implement
+        :param support_set:the embeddings of the support set images.shape[sequence_length,batch_size,64]
+        :param input_image: the embedding of the target image,shape[batch_size,64]
+        :return:shape[batch_size,sequence_length]
+        """
+        eps = 1e-10
+        similarities = []
+        for support_image in support_set:
+            sum_support = torch.sum(torch.pow(support_image, 2), 1)
+            support_manitude = sum_support.clamp(eps, float("inf")).rsqrt()
+            print('input_image', input_image)
+            print('support_image', support_image)
+            dot_product = input_image.unsqueeze(1).bmm(support_image.unsqueeze(2)).squeeze()
+            cosine_similarity = dot_product * support_manitude
+            similarities.append(cosine_similarity)
+        similarities = torch.stack(similarities)
+        return similarities.t()

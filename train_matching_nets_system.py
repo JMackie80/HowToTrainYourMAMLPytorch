@@ -1,6 +1,6 @@
 from data import MetaLearningSystemDataLoader
 from experiment_builder import ExperimentBuilder
-from gradient_descent import MatchingNetsFewShotClassifier
+from matching_nets import MatchingNetsFewShotClassifier
 from utils.parser_utils import get_args
 from utils.dataset_tools import maybe_unzip_dataset
 
