@@ -52,5 +52,6 @@
   "num_target_samples": 1,
 
   "second_order": true,
-  "use_multi_step_loss_optimization":true
+  "use_multi_step_loss_optimization":true,
+  "model": "maml++"
 }
