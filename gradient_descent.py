@@ -42,10 +42,6 @@ class GradientDescentFewShotClassifier(nn.Module):
                                              num_classes_per_set,
                                              args=args, device=device, meta_classifier=True).to(device=self.device)
 
-        print("Inner Loop parameters")
-        for key, value in self.inner_loop_optimizer.named_parameters():
-            print(key, value.shape)
-
         self.use_cuda = args.use_cuda
         self.device = device
         self.args = args
