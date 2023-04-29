@@ -157,6 +157,10 @@ class GradientDescentFewShotClassifier(nn.Module):
 
         loss = F.cross_entropy(input=preds, target=y)
 
+        self.meta_update(loss=loss)
+        self.optimizer.zero_grad()
+        self.zero_grad()
+
         return loss, preds
 
     def trainable_parameters(self):
@@ -230,11 +234,7 @@ class GradientDescentFewShotClassifier(nn.Module):
         data_batch = (x_support_set, x_target_set, y_support_set, y_target_set)
 
         losses, per_task_target_preds = self.train_forward_prop(data_batch=data_batch, epoch=epoch)
-
-        self.meta_update(loss=losses['loss'])
         losses['learning_rate'] = self.scheduler.get_lr()[0]
-        self.optimizer.zero_grad()
-        self.zero_grad()
 
         return losses, per_task_target_preds
 
