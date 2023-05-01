@@ -66,13 +66,6 @@ class GradientDescentFewShotClassifier(nn.Module):
 
             self.device = torch.cuda.current_device()
 
-    def get_across_task_loss_metrics(self, total_losses, total_accuracies):
-        losses = {'loss': torch.mean(torch.stack(total_losses))}
-
-        losses['accuracy'] = np.mean(total_accuracies)
-
-        return losses
-
     def forward(self, data_batch, num_steps, training_phase):
         """
         Runs a forward outer loop pass on the batch of tasks using the MAML/++ framework.
@@ -87,15 +80,13 @@ class GradientDescentFewShotClassifier(nn.Module):
 
         self.num_classes_per_set = ncs
 
-        total_losses = []
-        total_accuracies = []
         per_task_target_preds = [[] for i in range(len(x_target_set))]
-        self.classifier.zero_grad()
         for task_id, (x_support_set_task, y_support_set_task, x_target_set_task, y_target_set_task) in enumerate(zip(x_support_set,
                               y_support_set,
                               x_target_set,
                               y_target_set)):
             task_losses = []
+            total_accuracies = []
 
             n, s, c, h, w = x_target_set_task.shape
 
@@ -106,14 +97,13 @@ class GradientDescentFewShotClassifier(nn.Module):
 
             for num_step in range(num_steps):
 
-                support_loss, support_preds = self.net_forward(
+                self.net_forward(
                     x=x_support_set_task,
                     y=y_support_set_task,
                     backup_running_statistics=num_step == 0,
                     training=True,
                     num_step=num_step,
                 )
-                task_losses.append(support_loss)
 
                 if num_step == (self.args.number_of_training_steps_per_iter - 1):
                     target_loss, target_preds = self.net_forward(x=x_target_set_task,
@@ -126,15 +116,13 @@ class GradientDescentFewShotClassifier(nn.Module):
             _, predicted = torch.max(target_preds.data, 1)
 
             accuracy = predicted.float().eq(y_target_set_task.data.float()).cpu().float()
-            task_losses = torch.sum(torch.stack(task_losses))
-            total_losses.append(task_losses)
             total_accuracies.extend(accuracy)
+            losses = {'loss': torch.mean(torch.stack(task_losses))}
+            losses['accuracy'] = np.mean(total_accuracies)
+            self.meta_update(loss=losses['loss'])
 
-            if not training_phase:
-                self.classifier.restore_backup_stats()
-
-        losses = self.get_across_task_loss_metrics(total_losses=total_losses,
-                                                   total_accuracies=total_accuracies)
+            #if not training_phase:
+            #    self.classifier.restore_backup_stats()
 
         return losses, per_task_target_preds
 
@@ -156,10 +144,6 @@ class GradientDescentFewShotClassifier(nn.Module):
         preds = self.classifier.forward(x=x, training=training, backup_running_statistics=backup_running_statistics, num_step=num_step)
 
         loss = F.cross_entropy(input=preds, target=y)
-
-        self.meta_update(loss=loss)
-        self.optimizer.zero_grad()
-        self.zero_grad()
 
         return loss, preds
 
@@ -259,10 +243,6 @@ class GradientDescentFewShotClassifier(nn.Module):
         data_batch = (x_support_set, x_target_set, y_support_set, y_target_set)
 
         losses, per_task_target_preds = self.evaluation_forward_prop(data_batch=data_batch, epoch=self.current_epoch)
-
-        # losses['loss'].backward() # uncomment if you get the weird memory error
-        # self.zero_grad()
-        # self.optimizer.zero_grad()
 
         return losses, per_task_target_preds
 

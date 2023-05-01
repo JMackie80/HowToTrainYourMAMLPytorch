@@ -61,7 +61,6 @@ class ExperimentBuilder(object):
         self.augment_flag = 'omniglot' in self.args.dataset_name.lower()
         self.start_time = time.time()
         self.epochs_done_in_this_run = 0
-        print(self.state['current_iter'], int(self.args.total_iter_per_epoch * self.args.total_epochs))
 
     def build_summary_dict(self, total_losses, phase, summary_losses=None):
         """

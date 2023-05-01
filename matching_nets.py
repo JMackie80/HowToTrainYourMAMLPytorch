@@ -350,9 +350,6 @@ class AttentionalClassify(nn.Module):
         """
         softmax = nn.Softmax()
         softmax_similarities = softmax(similarities)
-        print('similarities', similarities)
-        print('softmax_similarities', softmax_similarities)
-        print('support_set_y', support_set_y)
         #preds = softmax_similarities.unsqueeze(1).bmm(support_set_y).squeeze()
         preds = softmax_similarities.bmm(support_set_y)
         return preds
@@ -377,8 +374,6 @@ class DistanceNetwork(nn.Module):
         for support_image in support_set:
             sum_support = torch.sum(torch.pow(support_image, 2), 1)
             support_manitude = sum_support.clamp(eps, float("inf")).rsqrt()
-            print('input_image', input_image)
-            print('support_image', support_image)
             dot_product = input_image.unsqueeze(1).bmm(support_image.unsqueeze(2)).squeeze()
             cosine_similarity = dot_product * support_manitude
             similarities.append(cosine_similarity)

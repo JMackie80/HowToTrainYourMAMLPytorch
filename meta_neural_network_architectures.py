@@ -382,8 +382,6 @@ class MetaConvNormLayerReLU(nn.Module):
 
         out = F.leaky_relu(out)
 
-        print(out.shape)
-
     def forward(self, x, num_step, params=None, training=False, backup_running_statistics=False):
         """
             Forward propagates by applying the function. If params are none then internal params are used.
@@ -494,7 +492,6 @@ class MetaNormLayerConvReLU(nn.Module):
 
 
         out = self.layer_dict['activation_function_pre'].forward(self.conv.forward(out))
-        print(out.shape)
 
     def forward(self, x, num_step, params=None, training=False, backup_running_statistics=False):
         """
@@ -667,7 +664,6 @@ class VGGReLUNormNetwork(nn.Module):
                     and param.grad is not None
                     and torch.sum(param.grad) > 0
                 ):
-                    print(param.grad)
                     param.grad.zero_()
         else:
             for name, param in params.items():
@@ -676,7 +672,6 @@ class VGGReLUNormNetwork(nn.Module):
                     and param.grad is not None
                     and torch.sum(param.grad) > 0
                 ):
-                    print(param.grad)
                     param.grad.zero_()
                     params[name].grad = None
 
