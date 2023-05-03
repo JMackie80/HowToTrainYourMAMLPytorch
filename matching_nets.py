@@ -86,7 +86,6 @@ class MatchingNetsFewShotClassifier(nn.Module):
 
         self.num_classes_per_set = ncs
 
-        total_accuracies = []
         per_task_target_preds = [[] for i in range(len(x_target_set))]
         self.classifier.zero_grad()
         for task_id, (x_support_set_task, y_support_set_task, x_target_set_task, y_target_set_task) in enumerate(zip(x_support_set,
@@ -94,46 +93,44 @@ class MatchingNetsFewShotClassifier(nn.Module):
                               x_target_set,
                               y_target_set)):
             losses = []
-
             n, s, c, h, w = x_target_set_task.shape
-
             x_support_set_task = x_support_set_task.view(-1, c, h, w)
             y_support_set_task = y_support_set_task.view(-1)
             x_target_set_task = x_target_set_task.view(-1, c, h, w)
             y_target_set_task = y_target_set_task.view(-1)
-            x_support_images = []
 
-            # convert to one hot encoding
-            print(y_support_set_task)
-            #y_support_set_task = y_support_set_task.numpy()
-            #y_support_set_task = Variable(torch.from_numpy(y_support_set_task), requires_grad=False).long()
-            #y_support_set_task = y_support_set_task.unsqueeze(1)
-            #sequence_length = y_support_set_task.size()[1]
-            #batch_size = y_support_set_task.size()[0]
-            #print(y_support_set_task, batch_size, sequence_length, self.num_classes_per_set)
-            #y_support_zeros = torch.zeros(1, sequence_length, self.num_classes_per_set)
-            #print(y_support_zeros)
-            #y_support_scatter = y_support_zeros.scatter_(2, y_support_set_task, 1)
-            #print(y_support_scatter)
-            #y_support_set_one_hot = Variable(y_support_zeros, requires_grad=False)
-            y_support_set_one_hot = F.one_hot(y_target_set_task)
+            support_encoding = self.net_forward(
+                x=x_support_set_task,
+                y=y_support_set_task,
+                backup_running_statistics=False,
+                training=True,
+                num_step=0
+            )
 
-            for num_step in range(num_steps):
-                if num_step == (self.args.number_of_training_steps_per_iter - 1):
-                    # get similarities between support set embeddings and target
-                    similarites = self.dn(support_set=x_support_images, input_image=x_target_set_task)
-                    # produce predictions for target probabilities
-                    target_preds = self.classify(similarites, support_set_y=y_support_set_one_hot)
-                    values, indices = target_preds.max(1)
-                    accuracy = torch.mean((indices.squeeze() == y_target_set_task).float())
-                    total_accuracies.extend(accuracy)
-                    crossentropy_loss = F.cross_entropy(target_preds, y_target_set_task)
-                    self.meta_update(loss=crossentropy_loss)
-                    self.optimizer.zero_grad()
-                    self.zero_grad()
-                    losses.append(crossentropy_loss)
-                else:
-                    x_support_images.append(x_support_set_task)
+            target_encoding = self.net_forward(
+                x=x_target_set_task,
+                y=y_target_set_task,
+                backup_running_statistics=False,
+                training=True,
+                num_step=0
+            )
+            # get similarities between support set embeddings and target
+            similarites = self.dn(support_set=support_encoding, input_image=target_encoding)
+            # produce predictions for target probabilities
+            y_one_hot = F.one_hot(y_support_set_task, 5).float()
+            target_preds = self.classify(similarites, support_set_y=y_one_hot)
+            values, indices = target_preds.max(1)
+            accuracies = []
+            for index, y in zip(indices, y_target_set_task):
+                accuracies.append((index == y).float())
+            accuracy = torch.mean(torch.stack(accuracies))
+            crossentropy_loss = F.cross_entropy(target_preds.squeeze(), y_target_set_task.float())
+            self.meta_update(loss=crossentropy_loss)
+            self.optimizer.zero_grad()
+            self.zero_grad()
+            losses.append(crossentropy_loss)
+            losses = {'loss': crossentropy_loss}
+            losses['accuracy'] = accuracy
 
             if not training_phase:
                 self.classifier.restore_backup_stats()
@@ -155,15 +152,7 @@ class MatchingNetsFewShotClassifier(nn.Module):
         :param num_step: An integer indicating the number of the step in the inner loop.
         :return: the crossentropy losses with respect to the given y, the predictions of the base model.
         """
-        preds = self.classifier.forward(x=x, training=training, backup_running_statistics=backup_running_statistics, num_step=num_step)
-
-        loss = F.cross_entropy(input=preds, target=y)
-
-        self.meta_update(loss=loss)
-        self.optimizer.zero_grad()
-        self.zero_grad()
-
-        return loss, preds
+        return self.classifier.forward(x=x, training=training, backup_running_statistics=backup_running_statistics, num_step=num_step)
 
     def trainable_parameters(self):
         """
@@ -227,7 +216,6 @@ class MatchingNetsFewShotClassifier(nn.Module):
             self.train()
 
         x_support_set, x_target_set, y_support_set, y_target_set = data_batch
-
         x_support_set = torch.Tensor(x_support_set).float().to(device=self.device)
         x_target_set = torch.Tensor(x_target_set).float().to(device=self.device)
         y_support_set = torch.Tensor(y_support_set).long().to(device=self.device)
@@ -236,7 +224,7 @@ class MatchingNetsFewShotClassifier(nn.Module):
         data_batch = (x_support_set, x_target_set, y_support_set, y_target_set)
 
         losses, per_task_target_preds = self.train_forward_prop(data_batch=data_batch, epoch=epoch)
-        losses['learning_rate'] = self.scheduler.get_lr()[0]
+        #losses['learning_rate'] = self.scheduler.get_lr()[0]
 
         return losses, per_task_target_preds
 
@@ -350,8 +338,7 @@ class AttentionalClassify(nn.Module):
         """
         softmax = nn.Softmax()
         softmax_similarities = softmax(similarities)
-        #preds = softmax_similarities.unsqueeze(1).bmm(support_set_y).squeeze()
-        preds = softmax_similarities.bmm(support_set_y)
+        preds = softmax_similarities.unsqueeze(1).bmm(support_set_y.t().unsqueeze(2))
         return preds
 
 class DistanceNetwork(nn.Module):
@@ -372,9 +359,10 @@ class DistanceNetwork(nn.Module):
         eps = 1e-10
         similarities = []
         for support_image in support_set:
+            support_image = support_image.unsqueeze(1)
             sum_support = torch.sum(torch.pow(support_image, 2), 1)
             support_manitude = sum_support.clamp(eps, float("inf")).rsqrt()
-            dot_product = input_image.unsqueeze(1).bmm(support_image.unsqueeze(2)).squeeze()
+            dot_product = input_image.mm(support_image).squeeze()
             cosine_similarity = dot_product * support_manitude
             similarities.append(cosine_similarity)
         similarities = torch.stack(similarities)

@@ -97,13 +97,15 @@ class GradientDescentFewShotClassifier(nn.Module):
 
             for num_step in range(num_steps):
 
-                self.net_forward(
+                support_loss, support_preds = self.net_forward(
                     x=x_support_set_task,
                     y=y_support_set_task,
                     backup_running_statistics=num_step == 0,
                     training=True,
                     num_step=num_step,
                 )
+                losses = {'loss': support_loss}
+                self.meta_update(loss=losses['loss'])
 
                 if num_step == (self.args.number_of_training_steps_per_iter - 1):
                     target_loss, target_preds = self.net_forward(x=x_target_set_task,
@@ -121,8 +123,8 @@ class GradientDescentFewShotClassifier(nn.Module):
             losses['accuracy'] = np.mean(total_accuracies)
             self.meta_update(loss=losses['loss'])
 
-            #if not training_phase:
-            #    self.classifier.restore_backup_stats()
+            if not training_phase:
+                self.classifier.restore_backup_stats()
 
         return losses, per_task_target_preds
 
