@@ -280,10 +280,8 @@ class ExperimentBuilder(object):
         #     assert np.equal(np.array(per_model_per_batch_targets[0]), np.array(per_model_per_batch_targets[i]))
 
         per_batch_preds = np.mean(per_model_per_batch_preds, axis=0)
-        #print(per_batch_preds.shape)
         per_batch_max = np.argmax(per_batch_preds, axis=2)
         per_batch_targets = np.array(per_model_per_batch_targets[0]).reshape(per_batch_max.shape)
-        #print(per_batch_max)
         accuracy = np.mean(np.equal(per_batch_targets, per_batch_max))
         accuracy_std = np.std(np.equal(per_batch_targets, per_batch_max))
 

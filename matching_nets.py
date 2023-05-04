@@ -117,20 +117,21 @@ class MatchingNetsFewShotClassifier(nn.Module):
             # get similarities between support set embeddings and target
             similarites = self.dn(support_set=support_encoding, input_image=target_encoding)
             # produce predictions for target probabilities
-            y_one_hot = F.one_hot(y_support_set_task, 5).float()
-            target_preds = self.classify(similarites, support_set_y=y_one_hot)
+            target_preds = self.classify(similarites, support_set_y=y_support_set_task)
             values, indices = target_preds.max(1)
             accuracies = []
-            for index, y in zip(indices, y_target_set_task):
+            for index, y in zip(indices, y_support_set_task):
                 accuracies.append((index == y).float())
             accuracy = torch.mean(torch.stack(accuracies))
-            crossentropy_loss = F.cross_entropy(target_preds.squeeze(), y_target_set_task.float())
+            crossentropy_loss = F.cross_entropy(target_preds.squeeze(), y_support_set_task.long())
             self.meta_update(loss=crossentropy_loss)
             self.optimizer.zero_grad()
             self.zero_grad()
             losses.append(crossentropy_loss)
             losses = {'loss': crossentropy_loss}
             losses['accuracy'] = accuracy
+
+            per_task_target_preds[task_id] = target_preds.detach().cpu().numpy()
 
             if not training_phase:
                 self.classifier.restore_backup_stats()
@@ -224,7 +225,7 @@ class MatchingNetsFewShotClassifier(nn.Module):
         data_batch = (x_support_set, x_target_set, y_support_set, y_target_set)
 
         losses, per_task_target_preds = self.train_forward_prop(data_batch=data_batch, epoch=epoch)
-        #losses['learning_rate'] = self.scheduler.get_lr()[0]
+        losses['learning_rate'] = self.scheduler.get_lr()[0]
 
         return losses, per_task_target_preds
 
@@ -338,8 +339,8 @@ class AttentionalClassify(nn.Module):
         """
         softmax = nn.Softmax()
         softmax_similarities = softmax(similarities)
-        preds = softmax_similarities.unsqueeze(1).bmm(support_set_y.t().unsqueeze(2))
-        return preds
+        #preds = support_set_y.transpose(0, 1).float().mm(softmax_similarities)
+        return softmax_similarities
 
 class DistanceNetwork(nn.Module):
     """
@@ -366,4 +367,4 @@ class DistanceNetwork(nn.Module):
             cosine_similarity = dot_product * support_manitude
             similarities.append(cosine_similarity)
         similarities = torch.stack(similarities)
-        return similarities.t()
+        return similarities
