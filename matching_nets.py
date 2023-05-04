@@ -39,8 +39,6 @@ class MatchingNetsFewShotClassifier(nn.Module):
         self.current_epoch = 0
         self.num_classes_per_set = args.num_classes_per_set
 
-        #self.g = Classifier(layer_size=64, num_channels=args.image_channels, keep_prob=0.0, image_size=args.image_height)
-        
         self.dn = DistanceNetwork()
         self.classify = AttentionalClassify()
 
@@ -87,12 +85,15 @@ class MatchingNetsFewShotClassifier(nn.Module):
         self.num_classes_per_set = ncs
 
         per_task_target_preds = [[] for i in range(len(x_target_set))]
-        self.classifier.zero_grad()
         for task_id, (x_support_set_task, y_support_set_task, x_target_set_task, y_target_set_task) in enumerate(zip(x_support_set,
                               y_support_set,
                               x_target_set,
                               y_target_set)):
-            losses = []
+            total_accuracies = []
+            total_losses = []
+            all_accuracies = []
+            all_losses = []
+            all_predications = []
             n, s, c, h, w = x_target_set_task.shape
             x_support_set_task = x_support_set_task.view(-1, c, h, w)
             y_support_set_task = y_support_set_task.view(-1)
@@ -107,6 +108,7 @@ class MatchingNetsFewShotClassifier(nn.Module):
                 num_step=0
             )
 
+            #for x_target, y_target in zip(x_target_set_task, y_target_set_task):
             target_encoding = self.net_forward(
                 x=x_target_set_task,
                 y=y_target_set_task,
@@ -120,21 +122,28 @@ class MatchingNetsFewShotClassifier(nn.Module):
             target_preds = self.classify(similarites, support_set_y=y_support_set_task)
             values, indices = target_preds.max(1)
             accuracies = []
-            for index, y in zip(indices, y_support_set_task):
+            for index, y in zip(indices, y_target_set_task):
                 accuracies.append((index == y).float())
             accuracy = torch.mean(torch.stack(accuracies))
-            crossentropy_loss = F.cross_entropy(target_preds.squeeze(), y_support_set_task.long())
-            self.meta_update(loss=crossentropy_loss)
-            self.optimizer.zero_grad()
-            self.zero_grad()
-            losses.append(crossentropy_loss)
-            losses = {'loss': crossentropy_loss}
-            losses['accuracy'] = accuracy
+            crossentropy_loss = F.cross_entropy(target_preds, y_support_set_task.long())
+            total_accuracies.append(accuracy)
+            all_accuracies.append(accuracy)
+            total_losses.append(crossentropy_loss)
+            all_losses.append(crossentropy_loss)
+            all_predications.append(target_preds)
 
+            if training_phase:
+                self.meta_update(loss=crossentropy_loss)
+                
             per_task_target_preds[task_id] = target_preds.detach().cpu().numpy()
 
             if not training_phase:
                 self.classifier.restore_backup_stats()
+
+        mean_loss = torch.mean(torch.stack(all_losses))
+        mean_accuracy = torch.mean(torch.stack(all_accuracies))
+        losses = {'loss': mean_loss}
+        losses['accuracy'] = mean_accuracy
 
         return losses, per_task_target_preds
 
@@ -339,8 +348,8 @@ class AttentionalClassify(nn.Module):
         """
         softmax = nn.Softmax()
         softmax_similarities = softmax(similarities)
-        #preds = support_set_y.transpose(0, 1).float().mm(softmax_similarities)
-        return softmax_similarities
+        preds = softmax_similarities.mm(F.one_hot(support_set_y).float()).squeeze()
+        return preds
 
 class DistanceNetwork(nn.Module):
     """

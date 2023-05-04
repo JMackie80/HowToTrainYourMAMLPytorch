@@ -1,5 +1,5 @@
 {
-  "batch_size":1,
+  "batch_size":8,
   "image_height":28,
   "image_width":28,
   "image_channels":1,
@@ -25,7 +25,7 @@
   "enable_inner_loop_optimizable_bn_params": false,
 
   "total_epochs": 100,
-  "total_iter_per_epoch":1, 
+  "total_iter_per_epoch":500, 
   "continue_from_epoch": -2,
   "evaluate_on_test_set_only": false,
   "max_pooling": true,
@@ -46,11 +46,11 @@
   "cnn_num_filters":64,
   "num_stages":4,
   "conv_padding": true,
-  "number_of_training_steps_per_iter":1,
-  "number_of_evaluation_steps_per_iter":1,
+  "number_of_training_steps_per_iter":5,
+  "number_of_evaluation_steps_per_iter":5,
   "cnn_blocks_per_stage":1,
   "num_classes_per_set":5,
-  "num_samples_per_class":5,
+  "num_samples_per_class":1,
   "num_target_samples": 1,
 
   "second_order": true,
